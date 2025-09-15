@@ -30,5 +30,5 @@ This dashboard displays the outputs of Monte Carlo simulations of the macromodel
 ## h5 dashboards - for exploring results
 This dashboard finds any h5 model output files in your 'dev' equivalent folder and visualises individual variables within them. I use it for exploring and debugging model runs.
 
-## GDP debug dashboard - for debugging
-This dashboard visualises the 'GDP debug output' that is currently available in the patch-28-03-25 branch of the macro model. It shows GDP projections for the three GDP calculation approaches (output, income, expenditure) in a stacked line graph breaking down by the components of each approach. I created it for debugging if the three approaches are not adding up.
+## GDP components dashboard - for debugging
+This dashboard visualises the GDP components output that is currently available in the macro model. It shows GDP projections for the three GDP calculation approaches (output, income, expenditure) in a stacked line graph breaking down by the components of each approach. I created it for debugging if the three approaches are not adding up.

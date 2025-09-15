@@ -2,7 +2,7 @@
 GDP Analysis Dashboard
 
 This script creates a Streamlit dashboard to visualize GDP components and measures.
-It should be run from a directory containing an 'output' folder with 'GBR_gdp_debug_output.csv'.
+It should be run from a directory containing an 'output' folder with 'GBR_gdp_components.csv'.
 
 Requirements:
 - streamlit
@@ -28,17 +28,18 @@ st.set_page_config(
 
 # Title
 st.title("GDP Analysis Dashboard")
+st.markdown("This dashboard visualises the components of GDP when calculated using the three different methodologies. Each component listed in the legend has a + or - sign showing whether it should be added or subtracted from the total.")
 
 # Read the data
 @st.cache_data
 def load_data():
     # Get the current working directory (should be equivalent to inet-macro-dev)
     cwd = os.getcwd()
-    output_path = os.path.join(cwd, "output", "GBR_gdp_debug_output.csv")
+    output_path = os.path.join(cwd, "output", "GBR_gdp_components.csv")
     
     if not os.path.exists(output_path):
         st.error(f"Could not find GDP data at {output_path}")
-        st.error("Please ensure you are running this script from a directory containing an 'output' folder with 'GBR_gdp_debug_output.csv'")
+        st.error("Please ensure you are running this script from a directory containing an 'output' folder with 'GBR_gdp_components.csv'")
         st.stop()
         
     df = pd.read_csv(output_path)
