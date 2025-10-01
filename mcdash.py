@@ -16,7 +16,7 @@ st.set_page_config(
 
 # Constants
 VARIABLES_OF_INTEREST = {
-    'Gross Output': 'Gross Output',
+    'Gross Domestic Product': 'Gross Domestic Product',
     'CPI': 'CPI',
     'Unemployment Rate': 'Unemployment Rate'
 }
@@ -25,29 +25,178 @@ CONFIDENCE_LEVELS = {
     '10%': 0.10
 }
 
+def construct_gdp_estimate(exo, country="GBR"):
+    """Construct historical GDP estimate using available national accounts variables.
+    
+    This function attempts to construct GDP using multiple approaches based on the
+    available variables in the exogenous national accounts data. It follows the
+    same GDP calculation approaches used in the macromodel.
+    
+    Args:
+        exo: Exogenous data object containing national_accounts
+        country: Country code for error reporting
+        
+    Returns:
+        pd.Series: GDP estimate time series
+    """
+    
+    # Try different approaches to construct GDP
+    gdp_estimates = {}
+    
+    # Approach 2: GDP components approach (expenditure method)
+    gdp_components = []
+    component_names = []
+    
+    # Look for common GDP components in national accounts
+    potential_components = [
+        'Household Consumption (Value)',
+        'Government Consumption (Value)', 
+        'Real Government Consumption (Value)',
+        'Gross Fixed Capital Formation (Value)',
+        'Changes in Inventories (Value)',
+        'Exports (Value)',
+        'Imports (Value)',
+        'Net Exports (Value)',
+        'Final Consumption Expenditure (Value)',
+        'Gross Capital Formation (Value)',
+        'Real Household Consumption (Value)',
+        'Real Household Investment (Value)'
+    ]
+    
+    for component in potential_components:
+        if component in exo.national_accounts:
+            gdp_components.append(exo.national_accounts[component])
+            component_names.append(component)
+    
+    # If we have enough components, try to construct GDP using expenditure approach
+    if len(gdp_components) >= 3:  # Need at least 3 major components
+        try:
+            # Look for consumption, investment, government, exports, imports
+            consumption = None
+            investment = None
+            government = None
+            exports = None
+            imports = None
+            
+            for i, name in enumerate(component_names):
+                if 'Consumption' in name and 'Household' in name:
+                    consumption = gdp_components[i]
+                elif 'Consumption' in name and 'Government' in name:
+                    government = gdp_components[i]
+                elif 'Capital Formation' in name or 'Investment' in name:
+                    investment = gdp_components[i]
+                elif 'Exports' in name and 'Imports' not in name:
+                    exports = gdp_components[i]
+                elif 'Imports' in name and 'Exports' not in name:
+                    imports = gdp_components[i]
+            
+            # Construct GDP using expenditure approach: C + I + G + (X - M)
+            if consumption is not None and investment is not None and government is not None:
+                gdp_expenditure = consumption + investment + government
+                if exports is not None and imports is not None:
+                    gdp_expenditure += (exports - imports)
+                elif exports is not None:
+                    gdp_expenditure += exports
+                elif imports is not None:
+                    gdp_expenditure -= imports
+                
+                gdp_estimates['Expenditure Approach'] = gdp_expenditure
+                
+        except Exception as e:
+            print(f"Error constructing expenditure approach GDP for {country}: {e}")
+    
+    # Approach 3: Try to find direct GDP measures
+    direct_gdp_vars = [
+        'GDP (Value)',
+        'Gross Domestic Product (Value)',
+        'GDP at Market Prices (Value)',
+        'GDP at Current Prices (Value)',
+        'Real GDP (Value)',
+        'Nominal GDP (Value)'
+    ]
+    
+    for var in direct_gdp_vars:
+        if var in exo.national_accounts:
+            gdp_estimates[f'Direct {var}'] = exo.national_accounts[var]
+    
+    # Approach 4: Try output approach (Value Added)
+    # Look for value added measures
+    value_added_vars = [
+        'Value Added (Value)',
+        'Gross Value Added (Value)'
+    ]
+    
+    for var in value_added_vars:
+        if var in exo.national_accounts:
+            gdp_estimates[f'Output Approach ({var})'] = exo.national_accounts[var]
+            break
+    
+    # Choose the best available estimate
+    if gdp_estimates:
+        # Prefer direct measures, then output approach, then expenditure approach
+        preferred_order = [
+            'Direct GDP (Value)', 
+            'Direct Gross Domestic Product (Value)', 
+            'Direct GDP at Market Prices (Value)', 
+            'Direct GDP at Current Prices (Value)',
+            'Direct Real GDP (Value)',
+            'Direct Nominal GDP (Value)',
+            'Output Approach (Gross Value Added (Value))',
+            'Output Approach (Value Added (Value))',
+            'Expenditure Approach'
+        ]
+        
+        for preferred in preferred_order:
+            if preferred in gdp_estimates:
+                return gdp_estimates[preferred]
+        
+        # If none of the preferred ones are available, return the first one
+        return list(gdp_estimates.values())[0]
+    else:
+        # Fallback: return a series of NaN values
+        print(f"Warning: No GDP estimate could be constructed for {country}")
+        if len(exo.national_accounts) > 0:
+            # Use the length of the first available column
+            first_col = list(exo.national_accounts.columns)[0]
+            return pd.Series([np.nan] * len(exo.national_accounts[first_col]), 
+                           index=exo.national_accounts.index)
+        else:
+            return pd.Series([np.nan])
+
 @st.cache_data
-def load_historical_data():
+def load_historical_data(country="GBR"):
     """Load the full exogenous data series for historical data."""
     data = DataWrapper.init_from_pickle("data/processed_data/data.pkl")
-    country_data = data.synthetic_countries['GBR']
+    country_data = data.synthetic_countries[country]
     exo = country_data.exogenous_data
 
-    df = pd.DataFrame({
-        'Gross Output': exo.national_accounts['Gross Output (Value)'],
-        'CPI': exo.national_accounts['CPI (Value)'] if 'CPI (Value)' in exo.national_accounts else np.nan,
-        'Unemployment Rate': exo.labour_stats['Unemployment Rate (Value)'] if hasattr(exo, 'labour_stats') and 'Unemployment Rate (Value)' in exo.labour_stats else np.nan
-    })
+    # Construct GDP estimate using available variables
+    gdp_estimate = construct_gdp_estimate(exo, country)
+
+    # Use the actual index from the national_accounts data
+    df_index = exo.national_accounts.index
+    
+    # Create DataFrame with proper alignment
+    df = pd.DataFrame(index=df_index)
+    df['Gross Domestic Product'] = gdp_estimate
+    df['CPI'] = exo.national_accounts['CPI (Value)'] if 'CPI (Value)' in exo.national_accounts else np.nan
+    
+    # Handle unemployment rate - it might have a different index, so we need to align it
+    if hasattr(exo, 'labour_stats') and 'Unemployment Rate (Value)' in exo.labour_stats:
+        # Try to align the unemployment data with the national accounts index
+        unemp_data = exo.labour_stats['Unemployment Rate (Value)']
+        if hasattr(unemp_data, 'reindex'):
+            # If it has a reindex method, use it to align with national accounts
+            df['Unemployment Rate'] = unemp_data.reindex(df_index, method='ffill')
+        else:
+            # Fallback: create a series with the same index
+            df['Unemployment Rate'] = pd.Series([unemp_data.iloc[0]] * len(df_index), index=df_index)
+    else:
+        df['Unemployment Rate'] = np.nan
+    
     df = df.ffill().bfill()
     df = df.replace([np.inf, -np.inf], np.nan)
     df = df.ffill().bfill()
-    # Set the start year to match the first available data point
-    if len(df) > 0:
-        start_year = df.index[0].year if isinstance(df.index[0], pd.Timestamp) else 2000
-    else:
-        start_year = 2000
-    # If the index is not already a DatetimeIndex, create one
-    if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.date_range(start=f'{start_year}-01-01', periods=len(df), freq='Q')
     # Rebase CPI so that the first simulation period (2014-Q1) is 100
     sim_start = pd.Timestamp('2014-01-01')
     if 'CPI' in df.columns and sim_start in df.index:
@@ -57,14 +206,16 @@ def load_historical_data():
 
 @st.cache_data
 def load_monte_carlo_results(results_dir):
-    """Load and process Monte Carlo simulation results, and use nominal Gross Output levels"""
+    """Load and process Monte Carlo simulation results from shallow output files, and use nominal Gross Output levels"""
     results_dir = Path(results_dir).resolve()
     all_runs = []
     for file in sorted(results_dir.glob("UK_run_*.csv")):
         try:
             run_data = pd.read_csv(file, index_col=0)
-            # Use nominal Gross Output level
-            run_data['Gross Output'] = run_data['Gross Output']
+            # Use GDP if available, otherwise skip this run
+            if 'Gross Domestic Product' not in run_data.columns:
+                st.warning(f"No GDP data found in {file}, skipping...")
+                continue
             # Rebase CPI so that the first simulation period is 100
             if 'CPI' in run_data.columns:
                 cpi_base = run_data['CPI'].iloc[0]
@@ -83,6 +234,92 @@ def load_monte_carlo_results(results_dir):
         raise ValueError(f"No simulation results found in {results_dir}")
     combined_runs = pd.concat(all_runs, keys=range(len(all_runs)), names=['run', 'time'])
     return combined_runs
+
+@st.cache_data
+def load_monte_carlo_headlines(results_dir, country="GBR", filename=None):
+    """Load and process Monte Carlo simulation results from headlines files (CSV format with Simulation, Timestep, Country columns)"""
+    results_dir = Path(results_dir).resolve()
+    
+    # If a specific filename is provided, use it
+    if filename:
+        headlines_file = results_dir / filename
+        if not headlines_file.exists():
+            raise ValueError(f"Specified file {filename} not found in {results_dir}")
+    else:
+        # Look for CSV files that might contain Monte Carlo headlines
+        csv_files = list(results_dir.glob("*.csv"))
+        if not csv_files:
+            raise ValueError(f"No CSV files found in {results_dir}")
+        
+        # Try to find a file that looks like Monte Carlo headlines (has Simulation, Timestep, and Country columns)
+        headlines_file = None
+        for file in csv_files:
+            try:
+                # Read just the header to check column structure
+                sample_df = pd.read_csv(file, nrows=0)
+                if ('Simulation' in sample_df.columns and 'Timestep' in sample_df.columns and 
+                    'Country' in sample_df.columns):
+                    headlines_file = file
+                    break
+            except Exception:
+                continue
+        
+        if headlines_file is None:
+            raise ValueError(f"No Monte Carlo headlines file found in {results_dir}. Expected CSV with 'Simulation', 'Timestep', and 'Country' columns.")
+    
+    try:
+        # Load the headlines data
+        headlines_data = pd.read_csv(headlines_file)
+        
+        # Filter for the selected country's data
+        country_data = headlines_data[headlines_data['Country'] == country].copy()
+        if country_data.empty:
+            raise ValueError(f"No {country} data found in {headlines_file}")
+        
+        # Check if we have the expected variable columns
+        expected_vars = ['GDP', 'CPI', 'Unemployment Rate']
+        available_vars = [var for var in expected_vars if var in country_data.columns]
+        if not available_vars:
+            raise ValueError(f"None of the expected variables {expected_vars} found in {headlines_file}")
+        
+        # Create a mapping from direct variable names to standard names
+        column_mapping = {
+            'GDP': 'Gross Domestic Product',
+            'CPI': 'CPI', 
+            'Unemployment Rate': 'Unemployment Rate'
+        }
+        
+        # Select and rename columns
+        selected_columns = ['Simulation', 'Timestep'] + available_vars
+        df = country_data[selected_columns].copy()
+        
+        # Rename variables to standard names
+        for var_col, std_col in column_mapping.items():
+            if var_col in df.columns:
+                df[std_col] = df[var_col]
+        
+        # Rebase CPI so that the first simulation period is 100
+        if 'CPI' in df.columns:
+            # Find the first timestep for each simulation and rebase CPI
+            for sim in df['Simulation'].unique():
+                sim_mask = df['Simulation'] == sim
+                sim_data = df[sim_mask]
+                if len(sim_data) > 0:
+                    cpi_base = sim_data['CPI'].iloc[0]
+                    if not pd.isna(cpi_base) and cpi_base != 0:
+                        df.loc[sim_mask, 'CPI'] = df.loc[sim_mask, 'CPI'] / cpi_base * 100
+        
+        # Set Timestep as index and create MultiIndex with Simulation
+        df = df.set_index(['Simulation', 'Timestep'])
+        
+        # Convert to the same format as shallow output (MultiIndex with 'run' and 'time')
+        df.index = df.index.rename(['run', 'time'])
+        
+        return df
+        
+    except Exception as e:
+        st.warning(f"Error loading Monte Carlo headlines from {headlines_file}: {str(e)}")
+        raise
 
 @st.cache_data
 def load_var_forecast(results_dir, historical_data=None):
@@ -249,7 +486,7 @@ def calculate_statistics(runs_df):
         stats[var_key] = var_stats
     return stats
 
-def find_closest_run(runs_df, criterion, var_name='Gross Output'):
+def find_closest_run(runs_df, criterion, var_name='Gross Domestic Product'):
     """Find the run closest to the specified criterion for the selected variable"""
     if criterion == "Random Run":
         # Get all unique run indices and select one randomly
@@ -304,7 +541,7 @@ def find_closest_run(runs_df, criterion, var_name='Gross Output'):
             distances.append((run, distance))
         return min(distances, key=lambda x: x[1])[0]
 
-def get_summary_path(runs_df, path_type, var_name='Gross Output'):
+def get_summary_path(runs_df, path_type, var_name='Gross Domestic Product'):
     """Get the actual mean or median path across all runs for all variables"""
     summary_paths = {}
     for var in VARIABLES_OF_INTEREST.values():
@@ -433,7 +670,7 @@ def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_st
         return pd.DataFrame()  # No matching start
     # Map variable names between historical and simulation data
     var_mapping = {
-        'Gross Output': 'Gross Output',
+        'Gross Domestic Product': 'Gross Domestic Product',
         'CPI': 'CPI',
         'Unemployment Rate': 'Unemployment Rate',
         'Unemployment Rate (Value)': 'Unemployment Rate'
@@ -538,94 +775,251 @@ def main():
         if path_type == "Single Run":
             path_variable = st.selectbox(
                 "Variable for path selection:",
-                ["Gross Output", "CPI", "Unemployment Rate"]
+                ["Gross Domestic Product", "CPI", "Unemployment Rate"]
             )
             path_criterion = st.selectbox(
                 "Select path based on:",
                 ["Random Run", "Closest to Mean", "Closest to Median", "10% CI", "25% CI", "75% CI", "90% CI"]
             )
         else:
-            path_variable = "Gross Output"  # Default variable for mean/median paths
+            path_variable = "Gross Domestic Product"  # Default variable for mean/median paths
             path_criterion = path_type  # Use the path type as the criterion
 
-        st.markdown("""
-            <div style='height: 2rem;'></div>
-        """, unsafe_allow_html=True)
         alt_forecast = st.selectbox(
             "Show alternative forecasts?",
             ["None", "VAR", "Treasury Average"]
         )
-        st.markdown("""
-            <div style='height: 2rem;'></div>
-        """, unsafe_allow_html=True)
-        st.markdown("---")
-        results_dir = st.text_input(
-            "Results Directory",
-            value="output-MonteCarlo-GBR/monte_carlo"
+        
+        # Dynamic directory input based on input type
+        st.header("Input Type")
+        input_type = st.radio(
+            "Select input type:",
+            ["Monte Carlo Headlines", "Shallow Output Files"],
+            help="Shallow Output: Individual CSV files per run (UK_run_*.csv). Monte Carlo Headlines: Single CSV with Simulation/Timestep columns."
         )
-    try:
-        full_hist_data = load_historical_data.__wrapped__()
-        sim_start = pd.Timestamp('2014-01-01')
-        if sim_start in full_hist_data.index:
-            start_idx = full_hist_data.index.get_loc(sim_start) - 20
-            if start_idx < 0:
-                start_idx = 0
-            hist_window = full_hist_data.iloc[start_idx:]
-        else:
-            hist_window = full_hist_data
-        mc_results = load_monte_carlo_results(results_dir)
-        mc_stats = calculate_statistics(mc_results)
-        # Always load both VAR and Treasury forecasts for the RMSE table
-        var_forecast_df = load_var_forecast(results_dir, historical_data=full_hist_data)
-        treasury_forecast_df = load_treasury_forecast(historical_data=full_hist_data)
-        # Only plot the selected alternative forecast
-        alt_forecast_df = None
-        alt_label = None
-        if alt_forecast == "VAR":
-            alt_forecast_df = var_forecast_df
-            alt_label = "VAR"
-        elif alt_forecast == "Treasury Average":
-            alt_forecast_df = treasury_forecast_df
-            alt_label = "Treasury"
         
-        # Handle path selection
-        if path_type in ["Mean Path", "Median Path"]:
-            # Get the actual mean/median path for all variables
-            selected_run = get_summary_path(mc_results, path_type, path_variable)
-        else:
-            # Find the closest run to the selected criterion
-            selected_run_idx = find_closest_run(mc_results, path_criterion, var_name=path_variable)
-            selected_run = mc_results.loc[selected_run_idx]
+        st.markdown("""
+            <div style='height: 1rem;'></div>
+        """, unsafe_allow_html=True)
+                
+        if input_type == "Shallow Output Files":
+            results_dir = st.text_input(
+                "Results Directory (Shallow Output)",
+                value="output-MonteCarlo-GBR/monte_carlo",
+                help="Directory containing UK_run_*.csv files"
+            )
+            selected_file = None  # Not used for shallow output files
+        else:  # Monte Carlo Headlines
+            results_dir = st.text_input(
+                "Results Directory (Monte Carlo Headlines)",
+                value="output",
+                help="Directory containing CSV file with Simulation and Timestep columns"
+            )
+            
+            # File selection dropdown for Monte Carlo Headlines
+            try:
+                results_path = Path(results_dir).resolve()
+                if results_path.exists():
+                    # Find CSV files that look like Monte Carlo headlines
+                    csv_files = list(results_path.glob("*.csv"))
+                    headlines_files = []
+                    
+                    for file in csv_files:
+                        try:
+                            # Read just the header to check column structure
+                            sample_df = pd.read_csv(file, nrows=0)
+                            if 'Simulation' in sample_df.columns and 'Timestep' in sample_df.columns:
+                                headlines_files.append(file.name)
+                        except Exception:
+                            continue
+                    
+                    if headlines_files:
+                        selected_file = st.selectbox(
+                            "Select Monte Carlo Headlines File:",
+                            options=headlines_files,
+                            help="Select the specific CSV file containing Monte Carlo results"
+                        )
+                    else:
+                        st.warning("No valid Monte Carlo headlines files found in the directory.")
+                        selected_file = None
+                else:
+                    st.warning("Directory does not exist.")
+                    selected_file = None
+            except Exception as e:
+                st.warning(f"Error scanning directory: {str(e)}")
+                selected_file = None
+    # Define available countries
+    country_options = {
+        "GBR": "Great Britain",
+        "FRA": "France", 
+        "CAN": "Canada"
+    }
+    
+    if input_type == "Monte Carlo Headlines":
+        # Create country tabs for Monte Carlo Headlines
+        country_tabs = st.tabs([f"{code} - {name}" for code, name in country_options.items()])
         
-        tab_labels = list(VARIABLES_OF_INTEREST.keys())
-        tabs = st.tabs(tab_labels)
-        for i, (var_key, var_name) in enumerate(VARIABLES_OF_INTEREST.items()):
-            with tabs[i]:
-                fig = create_plot(
-                    hist_window,
-                    mc_stats,
-                    selected_run,
-                    var_key,
-                    var_name,
-                    forecast_start=hist_window.index[-1],
-                    show_var=(alt_forecast != "None"),
-                    var_forecast=alt_forecast_df,
-                    alt_label=alt_label
-                )
-                st.plotly_chart(fig, use_container_width=True)
-                rmse_table = compute_rmse_table(
-                    hist_window, mc_stats, selected_run, var_name, sim_start,
-                    var_forecast=alt_forecast_df, show_var=(alt_forecast != "None"), alt_label=alt_label,
-                    var_forecast_var=var_forecast_df, var_forecast_treasury=treasury_forecast_df
-                )
-                st.markdown('**Forecast RMSE vs. alternative forecasts and what actually happened**')
-                st.write(rmse_table.to_html(escape=False, index=False), unsafe_allow_html=True)
-                st.info("""RMSE (Root Mean Squared Error) is a standard measure of model fit. It quantifies the average magnitude of the error between model forecasts and actual observed values, with lower values indicating better fit. All values are shown as a percentage of the actual value.""")
-                st.info("""The VAR forecast uses historic data from the years prior to the simulation run to forecast the same period as the INET Oxford macromodel. Our VAR implementation follows Poledna et al 2023.""")
-                st.info("""The Treasury average forecast is the mean of a range of forecasters made by private sector forecasters in the first period of our simulation window. See the official [Treasury forecast database](https://www.gov.uk/government/statistics/database-of-forecasts-for-the-uk-economy) for more information.""")
+        for tab_idx, (country_code, country_name) in enumerate(country_options.items()):
+            with country_tabs[tab_idx]:
+                try:
+                    # Load historical data for this country
+                    full_hist_data = load_historical_data(country=country_code)
+                    sim_start = pd.Timestamp('2014-01-01')
+                    if sim_start in full_hist_data.index:
+                        start_idx = full_hist_data.index.get_loc(sim_start) - 20
+                        if start_idx < 0:
+                            start_idx = 0
+                        hist_window = full_hist_data.iloc[start_idx:]
+                    else:
+                        hist_window = full_hist_data
+                    
+                    # Load Monte Carlo results for this country
+                    mc_results = load_monte_carlo_headlines(results_dir, country=country_code, filename=selected_file)
+                    
+                    mc_stats = calculate_statistics(mc_results)
+                    # Always load both VAR and Treasury forecasts for the RMSE table
+                    var_forecast_df = load_var_forecast(results_dir, historical_data=full_hist_data)
+                    treasury_forecast_df = load_treasury_forecast(historical_data=full_hist_data)
+                    # Only plot the selected alternative forecast
+                    alt_forecast_df = None
+                    alt_label = None
+                    if alt_forecast == "VAR":
+                        alt_forecast_df = var_forecast_df
+                        alt_label = "VAR"
+                    elif alt_forecast == "Treasury Average":
+                        alt_forecast_df = treasury_forecast_df
+                        alt_label = "Treasury"
+                    
+                    # Handle path selection
+                    if path_type in ["Mean Path", "Median Path"]:
+                        # Get the actual mean/median path for all variables
+                        selected_run = get_summary_path(mc_results, path_type, path_variable)
+                    else:
+                        # Find the closest run to the selected criterion
+                        selected_run_idx = find_closest_run(mc_results, path_criterion, var_name=path_variable)
+                        selected_run = mc_results.loc[selected_run_idx]
+                    
+                    # Create variable tabs for this country, filtering out GDP if not available
+                    available_variables = {}
+                    for var_key, var_name in VARIABLES_OF_INTEREST.items():
+                        if var_name in mc_results.columns:
+                            available_variables[var_key] = var_name
+                        elif var_name == 'Gross Domestic Product':
+                            st.warning(f"No GDP data available for {country_name} ({country_code})")
+                    
+                    if not available_variables:
+                        st.error(f"No data available for {country_name} ({country_code})")
+                        continue
+                    
+                    tab_labels = list(available_variables.keys())
+                    tabs = st.tabs(tab_labels)
+                    for i, (var_key, var_name) in enumerate(available_variables.items()):
+                        with tabs[i]:
+                            fig = create_plot(
+                                hist_window,
+                                mc_stats,
+                                selected_run,
+                                var_key,
+                                var_name,
+                                forecast_start=hist_window.index[-1],
+                                show_var=(alt_forecast != "None"),
+                                var_forecast=alt_forecast_df,
+                                alt_label=alt_label
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            rmse_table = compute_rmse_table(
+                                hist_window, mc_stats, selected_run, var_name, sim_start,
+                                var_forecast=alt_forecast_df, show_var=(alt_forecast != "None"), alt_label=alt_label,
+                                var_forecast_var=var_forecast_df, var_forecast_treasury=treasury_forecast_df
+                            )
+                            st.markdown('**Forecast RMSE vs. alternative forecasts and what actually happened**')
+                            st.write(rmse_table.to_html(escape=False, index=False), unsafe_allow_html=True)
+                            st.info("""RMSE (Root Mean Squared Error) is a standard measure of model fit. It quantifies the average magnitude of the error between model forecasts and actual observed values, with lower values indicating better fit. All values are shown as a percentage of the actual value.""")
+                            st.info("""The VAR forecast uses historic data from the years prior to the simulation run to forecast the same period as the INET Oxford macromodel. Our VAR implementation follows Poledna et al 2023.""")
+                            st.info("""The Treasury average forecast is the mean of a range of forecasters made by private sector forecasters in the first period of our simulation window. See the official [Treasury forecast database](https://www.gov.uk/government/statistics/database-of-forecasts-for-the-uk-economy) for more information.""")
 
-    except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
+                except Exception as e:
+                    st.error(f"Error loading data for {country_name} ({country_code}): {str(e)}")
+    
+    else:  # Shallow Output Files
+        # Original behavior for Shallow Output Files (single country, GBR)
+        try:
+            full_hist_data = load_historical_data(country="GBR")
+            sim_start = pd.Timestamp('2014-01-01')
+            if sim_start in full_hist_data.index:
+                start_idx = full_hist_data.index.get_loc(sim_start) - 20
+                if start_idx < 0:
+                    start_idx = 0
+                hist_window = full_hist_data.iloc[start_idx:]
+            else:
+                hist_window = full_hist_data
+                
+            # Load Monte Carlo results
+            mc_results = load_monte_carlo_results(results_dir)
+                
+            mc_stats = calculate_statistics(mc_results)
+            # Always load both VAR and Treasury forecasts for the RMSE table
+            var_forecast_df = load_var_forecast(results_dir, historical_data=full_hist_data)
+            treasury_forecast_df = load_treasury_forecast(historical_data=full_hist_data)
+            # Only plot the selected alternative forecast
+            alt_forecast_df = None
+            alt_label = None
+            if alt_forecast == "VAR":
+                alt_forecast_df = var_forecast_df
+                alt_label = "VAR"
+            elif alt_forecast == "Treasury Average":
+                alt_forecast_df = treasury_forecast_df
+                alt_label = "Treasury"
+            
+            # Handle path selection
+            if path_type in ["Mean Path", "Median Path"]:
+                # Get the actual mean/median path for all variables
+                selected_run = get_summary_path(mc_results, path_type, path_variable)
+            else:
+                # Find the closest run to the selected criterion
+                selected_run_idx = find_closest_run(mc_results, path_criterion, var_name=path_variable)
+                selected_run = mc_results.loc[selected_run_idx]
+            
+            # Create variable tabs, filtering out GDP if not available
+            available_variables = {}
+            for var_key, var_name in VARIABLES_OF_INTEREST.items():
+                if var_name in mc_results.columns:
+                    available_variables[var_key] = var_name
+                elif var_name == 'Gross Domestic Product':
+                    st.warning("No GDP data available in shallow output files")
+            
+            if not available_variables:
+                st.error("No data available in shallow output files")
+            else:
+                tab_labels = list(available_variables.keys())
+                tabs = st.tabs(tab_labels)
+                for i, (var_key, var_name) in enumerate(available_variables.items()):
+                    with tabs[i]:
+                        fig = create_plot(
+                            hist_window,
+                            mc_stats,
+                            selected_run,
+                            var_key,
+                            var_name,
+                            forecast_start=hist_window.index[-1],
+                            show_var=(alt_forecast != "None"),
+                            var_forecast=alt_forecast_df,
+                            alt_label=alt_label
+                        )
+                        st.plotly_chart(fig, use_container_width=True)
+                        rmse_table = compute_rmse_table(
+                            hist_window, mc_stats, selected_run, var_name, sim_start,
+                            var_forecast=alt_forecast_df, show_var=(alt_forecast != "None"), alt_label=alt_label,
+                            var_forecast_var=var_forecast_df, var_forecast_treasury=treasury_forecast_df
+                        )
+                        st.markdown('**Forecast RMSE vs. alternative forecasts and what actually happened**')
+                        st.write(rmse_table.to_html(escape=False, index=False), unsafe_allow_html=True)
+                        st.info("""RMSE (Root Mean Squared Error) is a standard measure of model fit. It quantifies the average magnitude of the error between model forecasts and actual observed values, with lower values indicating better fit. All values are shown as a percentage of the actual value.""")
+                        st.info("""The VAR forecast uses historic data from the years prior to the simulation run to forecast the same period as the INET Oxford macromodel. Our VAR implementation follows Poledna et al 2023.""")
+                        st.info("""The Treasury average forecast is the mean of a range of forecasters made by private sector forecasters in the first period of our simulation window. See the official [Treasury forecast database](https://www.gov.uk/government/statistics/database-of-forecasts-for-the-uk-economy) for more information.""")
+
+        except Exception as e:
+            st.error(f"Error loading data: {str(e)}")
 
 if __name__ == "__main__":
     main() 
