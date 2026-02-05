@@ -15,14 +15,15 @@ Run with (from inet-macro-dev directory):
     streamlit run path/to/macromodel/util/dash_h5.py
 """
 
-import streamlit as st
-import pandas as pd
+import os
+from pathlib import Path
+
 import h5py
+import numpy as np
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from pathlib import Path
-import numpy as np
-import os
+import streamlit as st
 
 # Set page config
 st.set_page_config(
