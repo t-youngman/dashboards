@@ -13,11 +13,12 @@ Run with:
     streamlit run path/to/macromodel/util/dash_gdp.py
 """
 
-import streamlit as st
+import os
+
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 from plotly.subplots import make_subplots
-import os
 
 # Set page config
 st.set_page_config(

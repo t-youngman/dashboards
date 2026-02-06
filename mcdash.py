@@ -1,11 +1,13 @@
-import streamlit as st
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from macro_data import DataWrapper
 import math
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+from plotly.subplots import make_subplots
+
+from macro_data import DataWrapper
 
 # Set page config
 st.set_page_config(
@@ -57,10 +59,14 @@ def load_historical_data():
 
 @st.cache_data
 def load_monte_carlo_results(results_dir):
-    """Load and process Monte Carlo simulation results, and use nominal Gross Output levels"""
+    """Load and process Monte Carlo simulation results, and use nominal Gross Output levels.
+    Discovers both UK_run_*.csv (Monte Carlo) and GBR_shallow_output_*.csv (e.g. output_baseline)."""
     results_dir = Path(results_dir).resolve()
+    files = sorted(
+        list(results_dir.glob("UK_run_*.csv")) + list(results_dir.glob("GBR_shallow_output_*.csv"))
+    )
     all_runs = []
-    for file in sorted(results_dir.glob("UK_run_*.csv")):
+    for file in files:
         try:
             run_data = pd.read_csv(file, index_col=0)
             # Use nominal Gross Output level
@@ -314,22 +320,20 @@ def get_summary_path(runs_df, path_type, var_name='Gross Output'):
             summary_paths[var] = runs_df[var].groupby(level='time').median()
     return pd.DataFrame(summary_paths)
 
-def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, forecast_start, show_var=False, var_forecast=None, alt_label=None):
-    """Create a single plot for a variable"""
+def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, forecast_start, show_var=False, var_forecast=None, alt_label=None,
+               compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B"):
+    """Create a single plot for a variable. If compare_stats/compare_run are set, add second set with distinct colors."""
     fig = go.Figure()
-    # Align forecast to simulation start (2014-Q1)
     sim_start = pd.Timestamp('2014-01-01')
     forecast_dates = pd.date_range(
         start=sim_start,
         periods=len(mc_stats[var_key]),
         freq='QE'
     )
-    # Add background color for forecast period
     fig.add_vrect(
         x0=forecast_dates[0], x1=forecast_dates[-1],
         fillcolor="rgba(200,200,255,0.2)", layer="below", line_width=0
     )
-    # Subtle annotation for input data (historical period)
     fig.add_annotation(
         x=historical_data.index[0],
         y=1.01, xref="x", yref="paper",
@@ -339,7 +343,6 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
         align="left", bgcolor="rgba(240,240,240,0.5)", bordercolor="rgba(200,200,200,0.5)",
         xanchor="left"
     )
-    # Subtle annotation for simulation period (forecast)
     fig.add_annotation(
         x=forecast_dates[0],
         y=1.01, xref="x", yref="paper",
@@ -349,89 +352,89 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
         align="left", bgcolor="rgba(200,200,255,0.2)", bordercolor="rgba(200,200,200,0.2)",
         xanchor="left"
     )
-    # Add less faint vertical white lines at Q1 of each year
     all_dates = pd.concat([pd.Series(historical_data.index), pd.Series(forecast_dates)]).drop_duplicates().sort_values()
     q1_dates = [d for d in all_dates if d.month == 1]
     for q1 in q1_dates:
         fig.add_vline(x=q1, line=dict(color='rgba(255,255,255,0.5)', width=1), layer='below')
-    # Add 90% confidence intervals (shaded area)
+
+    # Primary set: 90% and 75% CI, then selected run
+    p = primary_label if (compare_stats is not None) else ""
     fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=mc_stats[var_key]['q90'],
-        fill=None,
-        mode='lines',
-        line_color='rgba(0,100,80,0.2)',
-        name='90% CI Upper'
+        x=forecast_dates, y=mc_stats[var_key]['q90'], fill=None, mode='lines',
+        line_color='rgba(0,100,80,0.2)', name=f'{p} 90% CI Upper'.strip() or '90% CI Upper'
     ))
     fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=mc_stats[var_key]['q10'],
-        fill='tonexty',
-        mode='lines',
-        line_color='rgba(0,100,80,0.2)',
-        name='90% CI Lower'
-    ))
-    # Add 75% confidence intervals (shaded area, more transparent)
-    fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=mc_stats[var_key]['q75'],
-        fill=None,
-        mode='lines',
-        line_color='rgba(0,100,200,0.1)',
-        name='75% CI Upper'
+        x=forecast_dates, y=mc_stats[var_key]['q10'], fill='tonexty', mode='lines',
+        line_color='rgba(0,100,80,0.2)', name=f'{p} 90% CI Lower'.strip() or '90% CI Lower'
     ))
     fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=mc_stats[var_key]['q25'],
-        fill='tonexty',
-        mode='lines',
-        line_color='rgba(255,255,255,0.1)',
-        name='75% CI Lower'
+        x=forecast_dates, y=mc_stats[var_key]['q75'], fill=None, mode='lines',
+        line_color='rgba(0,100,200,0.1)', name=f'{p} 75% CI Upper'.strip() or '75% CI Upper'
     ))
-    # Add selected run (forecast only)
     fig.add_trace(go.Scatter(
-        x=forecast_dates,
-        y=selected_run[var_name].values,
-        name='Selected Run',
+        x=forecast_dates, y=mc_stats[var_key]['q25'], fill='tonexty', mode='lines',
+        line_color='rgba(255,255,255,0.1)', name=f'{p} 75% CI Lower'.strip() or '75% CI Lower'
+    ))
+    fig.add_trace(go.Scatter(
+        x=forecast_dates, y=selected_run[var_name].values,
+        name=f'{p} Selected Run'.strip() or 'Selected Run',
         line=dict(color='red')
     ))
-    # Add alternative forecast if requested and available
+
+    # Comparison set (optional)
+    if compare_stats is not None and compare_run is not None and var_key in compare_stats:
+        n_compare = len(compare_stats[var_key])
+        compare_dates = pd.date_range(start=sim_start, periods=n_compare, freq='QE')
+        fig.add_trace(go.Scatter(
+            x=compare_dates, y=compare_stats[var_key]['q90'], fill=None, mode='lines',
+            line_color='rgba(180,80,0,0.35)', name=f'{compare_label} 90% CI Upper'
+        ))
+        fig.add_trace(go.Scatter(
+            x=compare_dates, y=compare_stats[var_key]['q10'], fill='tonexty', mode='lines',
+            line_color='rgba(180,80,0,0.35)', name=f'{compare_label} 90% CI Lower'
+        ))
+        fig.add_trace(go.Scatter(
+            x=compare_dates, y=compare_stats[var_key]['q75'], fill=None, mode='lines',
+            line_color='rgba(220,140,0,0.15)', name=f'{compare_label} 75% CI Upper'
+        ))
+        fig.add_trace(go.Scatter(
+            x=compare_dates, y=compare_stats[var_key]['q25'], fill='tonexty', mode='lines',
+            line_color='rgba(220,140,0,0.15)', name=f'{compare_label} 75% CI Lower'
+        ))
+        compare_vals = compare_run[var_name].values[:n_compare] if len(compare_run[var_name]) >= n_compare else compare_run[var_name].values
+        fig.add_trace(go.Scatter(
+            x=compare_dates[:len(compare_vals)], y=compare_vals,
+            name=f'{compare_label} Selected Run',
+            line=dict(color='blue', dash='dash', width=2)
+        ))
+
     if show_var and var_forecast is not None and var_name in var_forecast.columns:
         var_dates = var_forecast.index
         label = f"{alt_label} Forecast" if alt_label else "Alternative Forecast"
         fig.add_trace(go.Scatter(
-            x=var_dates,
-            y=var_forecast[var_name],
-            name=label,
+            x=var_dates, y=var_forecast[var_name], name=label,
             line=dict(color='green', dash='dash', width=2)
         ))
-    # Add historical data LAST so it is on top
     fig.add_trace(go.Scatter(
-        x=historical_data.index,
-        y=historical_data[var_name],
-        name='Historical',
-        line=dict(color='black')
+        x=historical_data.index, y=historical_data[var_name],
+        name='Historical', line=dict(color='black')
     ))
-    # Update layout
     fig.update_layout(
-        xaxis_title="Time",
-        yaxis_title=var_key,
-        showlegend=True,
-        hovermode='x unified',
+        xaxis_title="Time", yaxis_title=var_key,
+        showlegend=True, hovermode='x unified',
         xaxis=dict(tickformat='%Y-Q%q')
     )
     return fig
 
-def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_start, var_forecast=None, show_var=False, alt_label=None, var_forecast_var=None, var_forecast_treasury=None):
-    """Compute percentage RMSE between historical and forecast for various horizons, always showing all four columns."""
-    horizons = [1, 4, 8, 12, 20]  # quarters: 1Q, 1Y, 2Y, 3Y, 5Y
+def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_start, var_forecast=None, show_var=False, alt_label=None, var_forecast_var=None, var_forecast_treasury=None,
+                       compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B"):
+    """Compute percentage RMSE for various horizons. If compare_* are set, include comparison set columns."""
+    horizons = [1, 4, 8, 12, 20]
     results = []
-    # Find the index of the simulation start in the historical data
     if sim_start in historical_data.index:
         start_idx = historical_data.index.get_loc(sim_start)
     else:
-        return pd.DataFrame()  # No matching start
-    # Map variable names between historical and simulation data
+        return pd.DataFrame()
     var_mapping = {
         'Gross Output': 'Gross Output',
         'CPI': 'CPI',
@@ -441,37 +444,29 @@ def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_st
     hist_var = var_name
     sim_var = var_mapping.get(var_name, var_name)
     for h in horizons:
-        # Historical value at t+h
         if start_idx + h >= len(historical_data):
             hist_val = np.nan
         else:
             hist_val = historical_data[hist_var].iloc[start_idx + h]
-        # Forecast mean at t+h
         if h-1 < len(mc_stats[sim_var]):
             forecast_mean = mc_stats[sim_var]['mean'].iloc[h-1]
             selected_val = selected_run[sim_var].iloc[h-1]
         else:
-            forecast_mean = np.nan
-            selected_val = np.nan
-        # VAR forecast at t+h
+            forecast_mean = selected_val = np.nan
         var_val = np.nan
         if var_forecast_var is not None and sim_var in var_forecast_var.columns:
             try:
-                var_idx = h-1
-                if var_idx < len(var_forecast_var):
-                    var_val = var_forecast_var[sim_var].iloc[var_idx]
+                if h-1 < len(var_forecast_var):
+                    var_val = var_forecast_var[sim_var].iloc[h-1]
             except Exception:
                 var_val = np.nan
-        # Treasury forecast at t+h
         treasury_val = np.nan
         if var_forecast_treasury is not None and sim_var in var_forecast_treasury.columns:
             try:
-                var_idx = h-1
-                if var_idx < len(var_forecast_treasury):
-                    treasury_val = var_forecast_treasury[sim_var].iloc[var_idx]
+                if h-1 < len(var_forecast_treasury):
+                    treasury_val = var_forecast_treasury[sim_var].iloc[h-1]
             except Exception:
                 treasury_val = np.nan
-        # Calculate percentage RMSE
         if not (np.isnan(forecast_mean) or np.isnan(hist_val)):
             pct_rmse_mean = math.sqrt(((forecast_mean - hist_val) / abs(hist_val)) ** 2) * 100
             pct_rmse_sel = math.sqrt(((selected_val - hist_val) / abs(hist_val)) ** 2) * 100
@@ -487,22 +482,36 @@ def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_st
             pct_rmse_treasury = None
         row = {
             'Horizon': f'{h}Q',
-            'Our model - mean path': pct_rmse_mean,
-            'Our model - your selected path': pct_rmse_sel,
+            f'{primary_label} - mean' if compare_stats else 'Our model - mean path': pct_rmse_mean,
+            f'{primary_label} - selected' if compare_stats else 'Our model - your selected path': pct_rmse_sel,
             'VAR forecast': pct_rmse_var,
             'Treasury average': pct_rmse_treasury
         }
+        if compare_stats is not None and compare_run is not None and sim_var in compare_stats:
+            if h-1 < len(compare_stats[sim_var]):
+                comp_mean = compare_stats[sim_var]['mean'].iloc[h-1]
+                comp_sel = compare_run[sim_var].iloc[h-1]
+            else:
+                comp_mean = comp_sel = np.nan
+            if not (np.isnan(comp_mean) or np.isnan(hist_val)):
+                pct_rmse_comp_mean = math.sqrt(((comp_mean - hist_val) / abs(hist_val)) ** 2) * 100
+            else:
+                pct_rmse_comp_mean = np.nan
+            if not (np.isnan(comp_sel) or np.isnan(hist_val)):
+                pct_rmse_comp_sel = math.sqrt(((comp_sel - hist_val) / abs(hist_val)) ** 2) * 100
+            else:
+                pct_rmse_comp_sel = np.nan
+            row[f'{compare_label} - mean'] = pct_rmse_comp_mean
+            row[f'{compare_label} - selected'] = pct_rmse_comp_sel
         results.append(row)
-    # Create DataFrame and format the results
     df = pd.DataFrame(results)
-    # Format RMSE columns to 2 decimal places with percentage sign, and bold the best (lowest) value in each row
     rmse_cols = [col for col in df.columns if col != 'Horizon']
     def bold_min(row):
         vals = []
         for col in rmse_cols:
             try:
                 val = float(row[col])
-            except:
+            except (TypeError, ValueError):
                 val = float('inf')
             vals.append(val)
         min_val = min([v for v in vals if not math.isnan(v)], default=None)
@@ -518,6 +527,40 @@ def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_st
     if not df.empty:
         df[rmse_cols] = df.apply(bold_min, axis=1)
     return df
+
+def build_selected_run_pct_change_table(run_a, run_b, var_name, label_b_vs_a):
+    """Build a table of period-by-period percentage change (run_b vs run_a) for one variable."""
+    n = min(len(run_a), len(run_b))
+    if n == 0 or var_name not in run_a.columns or var_name not in run_b.columns:
+        return pd.DataFrame()
+    dates = pd.date_range(start=pd.Timestamp('2014-01-01'), periods=n, freq='Q')
+    rows = []
+    for i in range(n):
+        a_val = run_a[var_name].iloc[i]
+        b_val = run_b[var_name].iloc[i]
+        if a_val != 0 and not np.isnan(a_val):
+            pct = (b_val - a_val) / abs(a_val) * 100
+        else:
+            pct = np.nan
+        q = (dates[i].month - 1) // 3 + 1
+        rows.append({'Period': f"{dates[i].year}-Q{q}", label_b_vs_a: pct})
+    return pd.DataFrame(rows)
+
+def create_single_var_comparison_chart(run_a, run_b, label_a, label_b, var_name):
+    """Create a single chart comparing the two selected runs for one variable."""
+    n = min(len(run_a), len(run_b))
+    if n == 0 or var_name not in run_a.columns or var_name not in run_b.columns:
+        return go.Figure()
+    dates = pd.date_range(start=pd.Timestamp('2014-01-01'), periods=n, freq='QE')
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=run_a[var_name].values[:n], name=label_a, line=dict(color='red')
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=run_b[var_name].values[:n], name=label_b, line=dict(color='blue', dash='dash')
+    ))
+    fig.update_layout(yaxis_title=var_name, showlegend=True, hovermode='x unified')
+    return fig
 
 def main():
     st.markdown("""
@@ -559,10 +602,23 @@ def main():
             <div style='height: 2rem;'></div>
         """, unsafe_allow_html=True)
         st.markdown("---")
+        compare_mode = st.checkbox("Compare with second run set", value=False)
         results_dir = st.text_input(
             "Results Directory",
-            value="output-MonteCarlo-GBR/monte_carlo"
+            value="output-MonteCarlo-GBR/monte_carlo",
+            help="Primary set of runs (UK_run_*.csv or GBR_shallow_output_*.csv)."
         )
+        primary_label = ""
+        compare_dir = None
+        compare_label = "Set B"
+        if compare_mode:
+            primary_label = st.text_input("Label for primary set", value="Set A")
+            compare_dir = st.text_input(
+                "Comparison results directory",
+                value="output_baseline",
+                help="Second set of runs to compare."
+            )
+            compare_label = st.text_input("Label for comparison set", value="Set B")
     try:
         full_hist_data = load_historical_data.__wrapped__()
         sim_start = pd.Timestamp('2014-01-01')
@@ -575,10 +631,8 @@ def main():
             hist_window = full_hist_data
         mc_results = load_monte_carlo_results(results_dir)
         mc_stats = calculate_statistics(mc_results)
-        # Always load both VAR and Treasury forecasts for the RMSE table
         var_forecast_df = load_var_forecast(results_dir, historical_data=full_hist_data)
         treasury_forecast_df = load_treasury_forecast(historical_data=full_hist_data)
-        # Only plot the selected alternative forecast
         alt_forecast_df = None
         alt_label = None
         if alt_forecast == "VAR":
@@ -587,42 +641,63 @@ def main():
         elif alt_forecast == "Treasury Average":
             alt_forecast_df = treasury_forecast_df
             alt_label = "Treasury"
-        
-        # Handle path selection
+
         if path_type in ["Mean Path", "Median Path"]:
-            # Get the actual mean/median path for all variables
             selected_run = get_summary_path(mc_results, path_type, path_variable)
         else:
-            # Find the closest run to the selected criterion
             selected_run_idx = find_closest_run(mc_results, path_criterion, var_name=path_variable)
             selected_run = mc_results.loc[selected_run_idx]
-        
+
+        mc_stats_2 = None
+        selected_run_2 = None
+        if compare_mode and compare_dir:
+            mc_results_2 = load_monte_carlo_results(compare_dir)
+            mc_stats_2 = calculate_statistics(mc_results_2)
+            if path_type in ["Mean Path", "Median Path"]:
+                selected_run_2 = get_summary_path(mc_results_2, path_type, path_variable)
+            else:
+                sel_idx_2 = find_closest_run(mc_results_2, path_criterion, var_name=path_variable)
+                selected_run_2 = mc_results_2.loc[sel_idx_2]
+
         tab_labels = list(VARIABLES_OF_INTEREST.keys())
         tabs = st.tabs(tab_labels)
         for i, (var_key, var_name) in enumerate(VARIABLES_OF_INTEREST.items()):
             with tabs[i]:
                 fig = create_plot(
-                    hist_window,
-                    mc_stats,
-                    selected_run,
-                    var_key,
-                    var_name,
+                    hist_window, mc_stats, selected_run, var_key, var_name,
                     forecast_start=hist_window.index[-1],
-                    show_var=(alt_forecast != "None"),
-                    var_forecast=alt_forecast_df,
-                    alt_label=alt_label
+                    show_var=(alt_forecast != "None"), var_forecast=alt_forecast_df, alt_label=alt_label,
+                    compare_stats=mc_stats_2, compare_run=selected_run_2,
+                    primary_label=primary_label, compare_label=compare_label
                 )
                 st.plotly_chart(fig, use_container_width=True)
                 rmse_table = compute_rmse_table(
                     hist_window, mc_stats, selected_run, var_name, sim_start,
                     var_forecast=alt_forecast_df, show_var=(alt_forecast != "None"), alt_label=alt_label,
-                    var_forecast_var=var_forecast_df, var_forecast_treasury=treasury_forecast_df
+                    var_forecast_var=var_forecast_df, var_forecast_treasury=treasury_forecast_df,
+                    compare_stats=mc_stats_2, compare_run=selected_run_2,
+                    primary_label=primary_label, compare_label=compare_label
                 )
                 st.markdown('**Forecast RMSE vs. alternative forecasts and what actually happened**')
                 st.write(rmse_table.to_html(escape=False, index=False), unsafe_allow_html=True)
                 st.info("""RMSE (Root Mean Squared Error) is a standard measure of model fit. It quantifies the average magnitude of the error between model forecasts and actual observed values, with lower values indicating better fit. All values are shown as a percentage of the actual value.""")
                 st.info("""The VAR forecast uses historic data from the years prior to the simulation run to forecast the same period as the INET Oxford macromodel. Our VAR implementation follows Poledna et al 2023.""")
                 st.info("""The Treasury average forecast is the mean of a range of forecasters made by private sector forecasters in the first period of our simulation window. See the official [Treasury forecast database](https://www.gov.uk/government/statistics/database-of-forecasts-for-the-uk-economy) for more information.""")
+
+                if compare_mode and selected_run_2 is not None:
+                    st.markdown("---")
+                    st.subheader("Selected run comparison")
+                    pct_label = f"% change ({compare_label} vs {primary_label})"
+                    comp_table = build_selected_run_pct_change_table(
+                        selected_run, selected_run_2, var_name, pct_label
+                    )
+                    if not comp_table.empty:
+                        styled = comp_table.style.format({pct_label: "{:+.2f}%"}, na_rep="—")
+                        st.dataframe(styled, use_container_width=True)
+                        fig_comp = create_single_var_comparison_chart(
+                            selected_run, selected_run_2, primary_label, compare_label, var_name
+                        )
+                        st.plotly_chart(fig_comp, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
