@@ -49,7 +49,7 @@ def load_historical_data():
         start_year = 2000
     # If the index is not already a DatetimeIndex, create one
     if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.date_range(start=f'{start_year}-01-01', periods=len(df), freq='Q')
+        df.index = pd.date_range(start=f'{start_year}-01-01', periods=len(df), freq='QE')
     # Rebase CPI so that the first simulation period (2014-Q1) is 100
     sim_start = pd.Timestamp('2014-01-01')
     if 'CPI' in df.columns and sim_start in df.index:
@@ -120,7 +120,7 @@ def load_var_forecast(results_dir, historical_data=None):
             period_values = var_forecast.index.values
             if all(isinstance(p, (int, np.integer)) for p in period_values) or np.issubdtype(var_forecast.index.dtype, np.integer):
                 start = pd.Timestamp('2014-01-01')
-                var_forecast.index = pd.date_range(start=start, periods=len(var_forecast), freq='Q')
+                var_forecast.index = pd.date_range(start=start, periods=len(var_forecast), freq='QE')
             else:
                 def parse_period(p):
                     import re
@@ -164,7 +164,7 @@ def load_var_forecast(results_dir, historical_data=None):
             if var_col in var_data.columns:
                 var_forecast[std_col] = var_data[var_col]
         if not isinstance(var_forecast.index, pd.DatetimeIndex):
-            var_forecast.index = pd.date_range(start='2014-01-01', periods=len(var_forecast), freq='Q')
+            var_forecast.index = pd.date_range(start='2014-01-01', periods=len(var_forecast), freq='QE')
         return var_forecast
     except Exception as e:
         st.warning(f"Error loading VAR forecast: {str(e)}")
@@ -321,7 +321,7 @@ def get_summary_path(runs_df, path_type, var_name='Gross Output'):
     return pd.DataFrame(summary_paths)
 
 def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, forecast_start, show_var=False, var_forecast=None, alt_label=None,
-               compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B", shock_start_q=0, show_shock_annotation=False):
+               compare_stats=None, compare_run=None, primary_label="Baseline", compare_label="Shock", shock_start_q=0, show_shock_annotation=False):
     """Create a single plot for a variable. If compare_stats/compare_run are set, add second set with distinct colors."""
     fig = go.Figure()
     sim_start = pd.Timestamp('2014-01-01')
@@ -332,13 +332,13 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     )
     fig.add_vrect(
         x0=forecast_dates[0], x1=forecast_dates[-1],
-        fillcolor="rgba(200,200,255,0.2)", layer="below", line_width=0
+        fillcolor="rgba(200,255,200,0.2)", layer="below", line_width=0
     )
     if show_shock_annotation:
         shock_idx = max(0, min(shock_start_q, len(forecast_dates) - 1))
         fig.add_vrect(
             x0=forecast_dates[shock_idx], x1=forecast_dates[-1],
-            fillcolor="rgba(200,255,200,0.2)", layer="below", line_width=0
+            fillcolor="rgba(255,210,100,0.2)", layer="below", line_width=0
         )
         fig.add_annotation(
             x=forecast_dates[shock_idx],
@@ -394,7 +394,7 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     fig.add_trace(go.Scatter(
         x=forecast_dates, y=selected_run[var_name].values,
         name=f'{p} Selected Run'.strip() or 'Selected Run',
-        line=dict(color='red')
+        line=dict(color='green')
     ))
 
     # Comparison set (optional)
@@ -414,14 +414,14 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
             line_color='rgba(220,140,0,0.15)', name=f'{compare_label} 75% CI Upper'
         ))
         fig.add_trace(go.Scatter(
-            x=compare_dates, y=compare_stats[var_key]['q25'], fill='tonexty', mode='lines',
+            x=compare_dates, y=compare_stats[var_key]['q25'], fill='tonexty', fillcolor='rgba(255,255,255,0.2)', mode='lines',
             line_color='rgba(220,140,0,0.15)', name=f'{compare_label} 75% CI Lower'
         ))
         compare_vals = compare_run[var_name].values[:n_compare] if len(compare_run[var_name]) >= n_compare else compare_run[var_name].values
         fig.add_trace(go.Scatter(
             x=compare_dates[:len(compare_vals)], y=compare_vals,
             name=f'{compare_label} Selected Run',
-            line=dict(color='blue', dash='dash', width=2)
+            line=dict(color='red', dash='dash', width=2)
         ))
 
     if show_var and var_forecast is not None and var_name in var_forecast.columns:
@@ -443,7 +443,7 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     return fig
 
 def compute_rmse_table(historical_data, mc_stats, selected_run, var_name, sim_start, var_forecast=None, show_var=False, alt_label=None, var_forecast_var=None, var_forecast_treasury=None,
-                       compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B"):
+                       compare_stats=None, compare_run=None, primary_label="Baseline", compare_label="Shock"):
     """Compute percentage RMSE for various horizons. If compare_* are set, include comparison set columns."""
     horizons = [1, 4, 8, 12, 20]
     results = []
@@ -591,7 +591,7 @@ def main():
         st.header("Path Selection")
         path_type = st.selectbox(
             "Select path type:",
-            ["Mean Path", "Median Path", "Single Run"]
+            ["Median Path", "Mean Path", "Single Run"]
         )
         
         if path_type == "Single Run":
@@ -626,15 +626,15 @@ def main():
         )
         primary_label = ""
         compare_dir = None
-        compare_label = "Set B"
+        compare_label = "Shock"
         if compare_mode:
-            primary_label = st.text_input("Label for primary set", value="Set A")
+            primary_label = st.text_input("Label for primary set", value="Baseline")
             compare_dir = st.text_input(
                 "Comparison results directory",
                 value="output_baseline",
                 help="Second set of runs to compare."
             )
-            compare_label = st.text_input("Label for comparison set", value="Set B")
+            compare_label = st.text_input("Label for comparison set", value="Shock")
     try:
         full_hist_data = load_historical_data.__wrapped__()
         sim_start = pd.Timestamp('2014-01-01')
