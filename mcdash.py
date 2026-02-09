@@ -321,7 +321,7 @@ def get_summary_path(runs_df, path_type, var_name='Gross Output'):
     return pd.DataFrame(summary_paths)
 
 def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, forecast_start, show_var=False, var_forecast=None, alt_label=None,
-               compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B"):
+               compare_stats=None, compare_run=None, primary_label="Set A", compare_label="Set B", shock_start_q=0, show_shock_annotation=False):
     """Create a single plot for a variable. If compare_stats/compare_run are set, add second set with distinct colors."""
     fig = go.Figure()
     sim_start = pd.Timestamp('2014-01-01')
@@ -334,6 +334,21 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
         x0=forecast_dates[0], x1=forecast_dates[-1],
         fillcolor="rgba(200,200,255,0.2)", layer="below", line_width=0
     )
+    if show_shock_annotation:
+        shock_idx = max(0, min(shock_start_q, len(forecast_dates) - 1))
+        fig.add_vrect(
+            x0=forecast_dates[shock_idx], x1=forecast_dates[-1],
+            fillcolor="rgba(200,255,200,0.2)", layer="below", line_width=0
+        )
+        fig.add_annotation(
+            x=forecast_dates[shock_idx],
+            y=1.01, xref="x", yref="paper",
+            text="Shock",
+            showarrow=False,
+            font=dict(size=11, color="gray"),
+            align="left", bgcolor="rgba(200,255,200,0.2)", bordercolor="rgba(200,200,200,0.2)",
+            xanchor="left"
+        )
     fig.add_annotation(
         x=historical_data.index[0],
         y=1.01, xref="x", yref="paper",
@@ -346,12 +361,13 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     fig.add_annotation(
         x=forecast_dates[0],
         y=1.01, xref="x", yref="paper",
-        text="Simulation Period",
+        text="Simulation",
         showarrow=False,
         font=dict(size=11, color="gray"),
         align="left", bgcolor="rgba(200,200,255,0.2)", bordercolor="rgba(200,200,200,0.2)",
         xanchor="left"
     )
+
     all_dates = pd.concat([pd.Series(historical_data.index), pd.Series(forecast_dates)]).drop_duplicates().sort_values()
     q1_dates = [d for d in all_dates if d.month == 1]
     for q1 in q1_dates:
@@ -533,7 +549,7 @@ def build_selected_run_pct_change_table(run_a, run_b, var_name, label_b_vs_a):
     n = min(len(run_a), len(run_b))
     if n == 0 or var_name not in run_a.columns or var_name not in run_b.columns:
         return pd.DataFrame()
-    dates = pd.date_range(start=pd.Timestamp('2014-01-01'), periods=n, freq='Q')
+    dates = pd.date_range(start=pd.Timestamp('2014-01-01'), periods=n, freq='QE')
     rows = []
     for i in range(n):
         a_val = run_a[var_name].iloc[i]
@@ -630,6 +646,24 @@ def main():
         else:
             hist_window = full_hist_data
         mc_results = load_monte_carlo_results(results_dir)
+        n_periods_total = len(mc_results.index.get_level_values('time').unique())
+        max_periods = st.sidebar.number_input(
+            "Max time periods to display",
+            min_value=1,
+            max_value=n_periods_total,
+            value=n_periods_total,
+            help="Limit simulation periods shown in charts and tables (default: all)."
+        )
+        show_shock_annotation = st.sidebar.checkbox("Add shock annotation?", value=False)
+        shock_start_q = 0
+        if show_shock_annotation:
+            shock_start_q = st.sidebar.number_input(
+                "Shock start quarter",
+                min_value=0,
+                max_value=n_periods_total - 1 if n_periods_total else 0,
+                value=0,
+                help="Quarter index (0-based) when shock starts; 0 = first simulation period."
+            )
         mc_stats = calculate_statistics(mc_results)
         var_forecast_df = load_var_forecast(results_dir, historical_data=full_hist_data)
         treasury_forecast_df = load_treasury_forecast(historical_data=full_hist_data)
@@ -659,6 +693,20 @@ def main():
                 sel_idx_2 = find_closest_run(mc_results_2, path_criterion, var_name=path_variable)
                 selected_run_2 = mc_results_2.loc[sel_idx_2]
 
+        # Apply max_periods limit to simulation data
+        mc_stats = {k: v.iloc[:max_periods] for k, v in mc_stats.items()}
+        selected_run = selected_run.iloc[:max_periods]
+        if mc_stats_2 is not None:
+            mc_stats_2 = {k: v.iloc[:max_periods] for k, v in mc_stats_2.items()}
+        if selected_run_2 is not None:
+            selected_run_2 = selected_run_2.iloc[:max_periods]
+        if alt_forecast_df is not None and len(alt_forecast_df) > max_periods:
+            alt_forecast_df = alt_forecast_df.iloc[:max_periods]
+        if var_forecast_df is not None and len(var_forecast_df) > max_periods:
+            var_forecast_df = var_forecast_df.iloc[:max_periods]
+        if treasury_forecast_df is not None and len(treasury_forecast_df) > max_periods:
+            treasury_forecast_df = treasury_forecast_df.iloc[:max_periods]
+
         tab_labels = list(VARIABLES_OF_INTEREST.keys())
         tabs = st.tabs(tab_labels)
         for i, (var_key, var_name) in enumerate(VARIABLES_OF_INTEREST.items()):
@@ -668,9 +716,10 @@ def main():
                     forecast_start=hist_window.index[-1],
                     show_var=(alt_forecast != "None"), var_forecast=alt_forecast_df, alt_label=alt_label,
                     compare_stats=mc_stats_2, compare_run=selected_run_2,
-                    primary_label=primary_label, compare_label=compare_label
+                    primary_label=primary_label, compare_label=compare_label,
+                    shock_start_q=shock_start_q, show_shock_annotation=show_shock_annotation
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
                 rmse_table = compute_rmse_table(
                     hist_window, mc_stats, selected_run, var_name, sim_start,
                     var_forecast=alt_forecast_df, show_var=(alt_forecast != "None"), alt_label=alt_label,
@@ -693,11 +742,11 @@ def main():
                     )
                     if not comp_table.empty:
                         styled = comp_table.style.format({pct_label: "{:+.2f}%"}, na_rep="—")
-                        st.dataframe(styled, use_container_width=True)
+                        st.dataframe(styled, width='stretch')
                         fig_comp = create_single_var_comparison_chart(
                             selected_run, selected_run_2, primary_label, compare_label, var_name
                         )
-                        st.plotly_chart(fig_comp, use_container_width=True)
+                        st.plotly_chart(fig_comp, width='stretch')
 
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
