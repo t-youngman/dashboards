@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 # Constants
-SIM_START = pd.Timestamp('2014-01-01')  # default/fallback for formats without real timestamps
+SIM_START = pd.Timestamp('2019-01-01')  # default/fallback for formats without real timestamps (2019Q1)
 
 # Each dashboard variable maps to a historic source: a national_accounts column name (str), a
 # (table_name, column) pair for other exogenous_data tables, or None if loaded via
@@ -35,6 +35,7 @@ VARIABLE_GROUPS = {
         'GDP': 'GDP (Value)',
         'Gross Output': 'Gross Output (Value)',
         'Household Consumption': 'Household Consumption (Value)',
+        'Household Investment': 'Household Investment (Value)',
         'Government Consumption': 'Government Consumption (Value)',
         'Capital Bought': 'Gross Fixed Capital Formation (Value)',
         'Imports': 'Imports (Value)',
@@ -125,7 +126,7 @@ def load_historical_data(sim_start=SIM_START):
         start_year = 2000
     # If the index is not already a DatetimeIndex, create one
     if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.date_range(start=f'{start_year}-01-01', periods=len(df), freq='QE')
+        df.index = pd.date_range(start=f'{start_year}-01-01', periods=len(df), freq='QS')
     # Rebase price indices so that the first simulation period is 100
     for var in PRICE_INDEX_VARS:
         if var in df.columns and sim_start in df.index:
@@ -141,13 +142,26 @@ def _gross_output_series(run_data):
     raise KeyError("Missing Gross Output and GDP columns")
 
 
+def _resolve_mc_column(run_data, var):
+    """Match a dashboard variable to a column in an MC or shallow-output CSV."""
+    if var in run_data.columns:
+        return var
+    aliases = {"Taxes on Products": "Taxes on products"}
+    alias = aliases.get(var)
+    if alias and alias in run_data.columns:
+        return alias
+    lower_cols = {str(c).lower(): c for c in run_data.columns}
+    return lower_cols.get(var.lower())
+
+
 def _mc_variable_series(run_data, var):
     """Extract one variable's series from a parsed MC run, handling naming quirks."""
     if var == "Gross Output":
         return _gross_output_series(run_data)
-    if var == "Unemployment Rate" and var not in run_data.columns and "Unemployment Rate (Value)" in run_data.columns:
-        return run_data["Unemployment Rate (Value)"]
-    return run_data[var] if var in run_data.columns else np.nan
+    col = _resolve_mc_column(run_data, var)
+    if col is None and var == "Unemployment Rate" and "Unemployment Rate (Value)" in run_data.columns:
+        col = "Unemployment Rate (Value)"
+    return run_data[col] if col is not None else np.nan
 
 
 def _infer_sim_start(file):
@@ -189,15 +203,16 @@ def _parse_monte_carlo_csv(file):
 
 
 @st.cache_data
-def load_monte_carlo_results(results_dir, _loader_version=5):
+def load_monte_carlo_results(results_dir, _loader_version=7):
     """Load and process Monte Carlo simulation results, and use nominal Gross Output levels.
-    Discovers UK_run_*.csv, GBR_shallow_output*.csv, and exp*_combined_data.csv files."""
+    Discovers UK_run_*.csv, *shallow_output*.csv, and exp*_combined_data.csv files."""
     results_dir = Path(results_dir).resolve()
     files = sorted(
         {
             *results_dir.glob("UK_run_*.csv"),
             *results_dir.glob("GBR_shallow_output_*.csv"),
             *results_dir.glob("GBR_shallow_output*.csv"),
+            *results_dir.glob("*shallow_output*.csv"),
             *results_dir.glob("exp*.csv"),
         }
     )
@@ -270,7 +285,7 @@ def load_var_forecast(results_dir, historical_data=None, sim_start=SIM_START):
             # Set index as quarterly dates if period is integer
             period_values = var_forecast.index.values
             if all(isinstance(p, (int, np.integer)) for p in period_values) or np.issubdtype(var_forecast.index.dtype, np.integer):
-                var_forecast.index = pd.date_range(start=sim_start, periods=len(var_forecast), freq='QE')
+                var_forecast.index = pd.date_range(start=sim_start, periods=len(var_forecast), freq='QS')
             else:
                 def parse_period(p):
                     import re
@@ -303,7 +318,7 @@ def load_var_forecast(results_dir, historical_data=None, sim_start=SIM_START):
             if var_col in var_data.columns:
                 var_forecast[std_col] = var_data[var_col]
         if not isinstance(var_forecast.index, pd.DatetimeIndex):
-            var_forecast.index = pd.date_range(start=sim_start, periods=len(var_forecast), freq='QE')
+            var_forecast.index = pd.date_range(start=sim_start, periods=len(var_forecast), freq='QS')
         return var_forecast
     except Exception as e:
         st.warning(f"Error loading VAR forecast: {str(e)}")
@@ -391,7 +406,7 @@ def load_treasury_forecast(historical_data=None, sim_start=SIM_START):
 
         treasury = pd.DataFrame(
             {"GDP": quarterly_gdp, "CPI": quarterly_cpi},
-            index=pd.date_range(start=sim_start, periods=len(quarterly_gdp), freq="QE"),
+            index=pd.date_range(start=sim_start, periods=len(quarterly_gdp), freq="QS"),
         )
 
         _growth_pct_to_level(treasury, "CPI", base_val=100)
@@ -490,7 +505,7 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     forecast_dates = pd.date_range(
         start=sim_start,
         periods=len(mc_stats[var_key]),
-        freq='QE'
+        freq='QS'
     )
     fig.add_vrect(
         x0=forecast_dates[0], x1=forecast_dates[-1],
@@ -562,7 +577,7 @@ def create_plot(historical_data, mc_stats, selected_run, var_key, var_name, fore
     # Comparison set (optional)
     if compare_stats is not None and compare_run is not None and var_key in compare_stats:
         n_compare = len(compare_stats[var_key])
-        compare_dates = pd.date_range(start=compare_sim_start or sim_start, periods=n_compare, freq='QE')
+        compare_dates = pd.date_range(start=compare_sim_start or sim_start, periods=n_compare, freq='QS')
         fig.add_trace(go.Scatter(
             x=compare_dates, y=compare_stats[var_key]['q90'], fill=None, mode='lines',
             line_color='rgba(180,80,0,0.35)', name=f'{compare_label} 90% CI Upper'
@@ -705,7 +720,7 @@ def build_selected_run_pct_change_table(run_a, run_b, var_name, label_b_vs_a, si
     n = min(len(run_a), len(run_b))
     if n == 0 or var_name not in run_a.columns or var_name not in run_b.columns:
         return pd.DataFrame()
-    dates = pd.date_range(start=sim_start, periods=n, freq='QE')
+    dates = pd.date_range(start=sim_start, periods=n, freq='QS')
     rows = []
     for i in range(n):
         a_val = run_a[var_name].iloc[i]
@@ -723,7 +738,7 @@ def create_single_var_comparison_chart(run_a, run_b, label_a, label_b, var_name,
     n = min(len(run_a), len(run_b))
     if n == 0 or var_name not in run_a.columns or var_name not in run_b.columns:
         return go.Figure()
-    dates = pd.date_range(start=sim_start, periods=n, freq='QE')
+    dates = pd.date_range(start=sim_start, periods=n, freq='QS')
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=dates, y=run_a[var_name].values[:n], name=label_a, line=dict(color='red')

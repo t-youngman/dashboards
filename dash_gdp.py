@@ -36,7 +36,7 @@ st.markdown("This dashboard visualises the components of GDP when calculated usi
 def load_data():
     # Get the current working directory (should be equivalent to inet-macro-dev)
     cwd = os.getcwd()
-    output_path = os.path.join(cwd, "output", "GBR_gdp_components.csv")
+    output_path = os.path.join(cwd, "output", "GBR_gdp_components_df2019.csv")
     
     if not os.path.exists(output_path):
         st.error(f"Could not find GDP data at {output_path}")
